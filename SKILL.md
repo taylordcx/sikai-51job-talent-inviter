@@ -11,10 +11,16 @@ description: 在51job前程无忧企业端读取招聘岗位，按顾问输入�
 
 ## 第 0 步：环境闸门（先判定，再谈浏览器）
 
-启动任何浏览器之前，先在技能目录运行 `sh scripts/env_check.sh`（或用等价命令看 `uname -s` / `whoami` / `$HOME` / `DISPLAY` / 是否存在 `apt-get`）。判定结论只有三种，必须如实告知顾问：
+启动任何浏览器之前，先在技能目录运行 **`node scripts/env_check.mjs`**（跨平台，覆盖 macOS / Windows / Linux+WSL；有 sh 的环境也可用 `sh scripts/env_check.sh`，两者结论一致）。判定结论必须如实告知顾问：
 
 - **`VERDICT=LOCAL_DESKTOP`（Darwin + 顾问自己的家目录）**：走本地路线——真 Chrome + `--remote-debugging-port=9222` + 独立 `--user-data-dir`，再用 `scripts/cdp_tools.mjs` 接管。窗口在顾问屏幕上，登录由顾问手动完成。
-- **`VERDICT=CLOUD_SANDBOX`（Linux + root 或 `/root` 或存在 `apt-get`/`yum`/`apk`）**：**立即停止，不要起任何浏览器。** 禁止 `apt-get install xvfb x11vnc novnc websockify`，禁止新建虚拟显示，禁止在沙箱里后台拉 Chromium，禁止把 `http://localhost:6080/vnc.html` 之类的地址当作「顾问可见的窗口」。云端沙箱的 `localhost` 只是沙箱自己的回环地址，不是顾问电脑上的 Chrome；沙箱里的登录态也不在顾问本机，沙箱回收即丢失。此时向顾问说明：本轮会话跑在云端沙箱里，做不了本技能要求的「可见窗口 + 顾问手动登录」，请回到**本地工作区会话**重跑，并把可直接复用的提示词给他。本次任务到此为止，不假装已就绪。
+- **`VERDICT=LOCAL_DESKTOP_WIN`（Windows 本机，含 Git Bash/MSYS）**：走本地 Windows 路线，四条硬规则：
+  1. **用真 Chrome / Edge**（`Program Files` 下的 `chrome.exe` / `msedge.exe`），不要用 agent-browser 的 Chrome for Testing——dev 版二进制可能不出现在任务栏/窗口列表，顾问看不见窗口（2026-09-30 会话报告的 "Chrome 154" 需核实来源，CFT 版本号正是 154.x）。
+  2. **启动必须走平台后台常驻任务**（如 run_in_background）：这类环境每条命令的进程树会在命令结束时被回收，`spawn detached + unref` 挡不住 Job Object 的 kill-on-close，普通后台启动的浏览器**活不过一轮对话**（2026-09-30 实例：AI 试了 3 个端口和多种脱离方式才靠后台任务稳住）。
+  3. **profile 固定 `%USERPROFILE%\.51job-talent-inviter\browser-profile`**。若报「配置文件正被另一个 Chrome 进程使用」，正确做法是 `taskkill /F /IM chrome.exe` 清僵尸进程后**复用原目录**；**红线：禁止新建全新 profile 目录绕过锁冲突**——那会静默丢掉登录态，且必须明确告知顾问「本轮要重新扫码」（2026-09-30 实例：AI 换了 browser-profile-fresh 却宣称"下次重开不用再扫码"，误导）。
+  4. **窗口可见性自检**：启动后必须请顾问确认能在自己屏幕上看到 Chrome 窗口；看不到即视为不可见环境，停止——「环境的进程回收机制」这类措辞本身高度提示是沙箱/托管环境，不是顾问桌面。**看不到窗口就等于云端环境，无论什么操作系统。**
+- **`VERDICT=LOCAL_DESKTOP_WSL`（Windows 上的 WSL）**：浏览器必须在 Windows 侧启动（真 `chrome.exe`/`msedge.exe`），profile 放 Windows 用户目录，不要在 WSL 里装 Chromium；登录由顾问在 Windows 桌面完成。
+- **`VERDICT=CLOUD_SANDBOX`（Linux + root 或 `/root` 或存在 `apt-get`/`yum`/`apk`；或 Windows 服务会话）**：**立即停止，不要起任何浏览器。** 禁止 `apt-get install xvfb x11vnc novnc websockify`，禁止新建虚拟显示，禁止在沙箱里后台拉 Chromium，禁止把 `http://localhost:6080/vnc.html` 之类的地址当作「顾问可见的窗口」。云端沙箱的 `localhost` 只是沙箱自己的回环地址，不是顾问电脑上的 Chrome；沙箱里的登录态也不在顾问本机，沙箱回收即丢失。此时向顾问说明：本轮会话跑在云端沙箱里，做不了本技能要求的「可见窗口 + 顾问手动登录」，请回到**本地工作区会话**重跑，并把可直接复用的提示词给他。本次任务到此为止，不假装已就绪。
 - **`VERDICT=UNKNOWN`**：按失败处理，说明缺项，不要猜。
 
 最常见的触发场景：技能被放进 WorkBuddy 的**「项目」（团队项目）**里跑。项目会话由云端执行，技能被同步到 `/root/.codebuddy/skills/<uuid>`，读不到顾问本机文件系统——所以「在项目里跑本技能」必判 `CLOUD_SANDBOX`，必失败；要让顾问改回**本地工作区会话**发起（技能在用户级 `~/.workbuddy/skills/` 里已装好，不必放进项目）。
@@ -39,7 +45,8 @@ description: 在51job前程无忧企业端读取招聘岗位，按顾问输入�
 
 ## 自带工具
 
-- `scripts/env_check.sh`：环境闸门。对任何浏览器动作前先跑，输出 `LOCAL_DESKTOP` / `CLOUD_SANDBOX` / `UNKNOWN`，决定本轮能不能走本地 Chrome 路线。
+- `scripts/env_check.mjs`：**跨平台环境闸门（首选）**。任何浏览器动作前先跑 `node scripts/env_check.mjs`，输出 `LOCAL_DESKTOP` / `LOCAL_DESKTOP_WIN` / `LOCAL_DESKTOP_WSL` / `CLOUD_SANDBOX` / `UNKNOWN`，决定本轮能不能走本地浏览器路线。
+- `scripts/env_check.sh`：环境闸门的 sh 版（macOS/Linux/Git Bash），结论与 mjs 版一致，优先用 mjs 版。
 - `scripts/cdp_tools.mjs`：CDP 直连工具链（eval/eval-file/click/shot/esc/point/cards/points/provinces/hi），WorkBuddy 主力，见 browser-workflow.md「已验证工具链」。`hi` 子命令支持 `--budget N` 控制本次剩余邀约次数；`points` 返回结构化扣点预算（`canHireNonFeatured` / `canHireFeatured`）。
 - `scripts/invite_batch.mjs`：按预算串行邀约助手。入参 `--cards "0,1,3"` 或 `"0..4"` + `--budget N`，自动串行调用 `cdp_tools.mjs hi`，遇预算耗尽/精选不足/已沟通/失败自动停，输出 JSON 邀约档案。
 - 其余搜索脚本：按[演示后核对规则](references/demonstration-checks.md)复查最终生效条件；使用、字段和限制见[顾问输入与搜索](references/consultant-input.md)。这些脚本只负责搜索阶段；随后由执行本技能的助手使用浏览器工具逐人核对并点击Hi。它不是一个运行后无人值守的批量群发程序。

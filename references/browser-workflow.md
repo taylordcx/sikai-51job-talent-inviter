@@ -34,7 +34,22 @@ present_files → http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 - 就算面板能连上，登录态也只存在于沙箱内：扫码/短信验证要在沙箱的 Chromium 里重做一遍，沙箱回收后登录态即丢失，和「顾问本机 Chrome 登录一次长期复用」完全是两回事。
 - 51job 企业端本身要求顾问亲自完成登录与验证码；把登录搬到云端沙箱，既不满足技能的可见性要求，也让顾问无法核对操作。
 
-正确做法：先跑 `scripts/env_check.sh`。看到 `VERDICT=CLOUD_SANDBOX` 就停下，如实说明环境限制，请顾问到**本地工作区会话**重跑。环境判定脚本判定为云端时不得安装显示组件、不得新建虚拟显示、不得后台拉 Chromium；也不能因为沙箱里 9222/6080 探测失败就断言「产品不支持浏览器」，只能说「本轮会话所在环境做不到」。
+正确做法：先跑 `node scripts/env_check.mjs`（或 `sh scripts/env_check.sh`，结论一致）。看到 `VERDICT=CLOUD_SANDBOX` 就停下，如实说明环境限制，请顾问到**本地工作区会话**重跑。环境判定脚本判定为云端时不得安装显示组件、不得新建虚拟显示、不得后台拉 Chromium；也不能因为沙箱里 9222/6080 探测失败就断言「产品不支持浏览器」，只能说「本轮会话所在环境做不到」。
+
+### Windows 本机路线的三个坑（2026-09-30 实例）
+
+一次 Windows 会话的实际报告：「环境的进程回收机制会杀掉后台启动的浏览器，试了 3 个端口和多种脱离方式后才找到稳定方案（后台常驻任务）；9222 稳定监听，Chrome 154 已就绪；profile 目录有冲突，换成全新目录 browser-profile-fresh，登录态会持久化在这里，下次重开不用再扫码。」这段话暴露了三个坑，Windows 路线必须按下面处理：
+
+**坑 1：进程回收杀掉后台浏览器 → 必须走平台后台常驻任务。**
+这类环境每条命令跑在独立沙箱/作业对象（Job Object）里，命令一结束就回收整棵进程树。`start_browser.mjs` 在非 macOS 上用的 `spawn(detached:true)` + `unref()` 在 Windows 上只等于「新建进程组」，**挡不住 Job Object 的 kill-on-close**——浏览器起得来，活不过一轮对话。正确做法：用平台的**后台常驻任务**（如 run_in_background）启动浏览器，命令层面的任何 detached/nohup/start 花招都不可靠。端口被占不是因为端口本身有问题，是前一个浏览器实例没死透；不要靠换端口（试 3 个端口）绕。
+
+**坑 2：profile 锁冲突 → 清僵尸复用原目录，禁止换新目录。**
+被强杀的 Chrome 会留下 profile 锁文件，新实例报「配置文件正被另一个 Chrome 进程使用」拒启。正确顺序：`taskkill /F /IM chrome.exe` 清掉僵尸进程 → **复用原 profile 目录**（`%USERPROFILE%\.51job-talent-inviter\browser-profile`）重启。**红线：禁止新建全新 profile 目录绕过**——全新目录没有任何登录态，顾问本轮必须重新扫码，而且登录态从此散落在非约定目录。若确实换了目录，必须如实告知顾问「本轮要重新扫码」，不能说成「下次重开不用再扫码」。
+
+**坑 3：「Chrome 154」要核实是不是 Chrome for Testing。**
+agent-browser 自带的 Chrome for Testing 版本号正是 154.x；它是 dev 版二进制，Windows 上同样可能不出现在任务栏/窗口列表，顾问看不见窗口。优先用 `C:\Program Files\Google\Chrome\Application\chrome.exe`（真 Chrome）或 Edge；启动后**必须请顾问确认屏幕上能看到窗口**。
+
+**总判定准则**：顾问能不能在自己屏幕上看到那个浏览器窗口？看不到 = 不可见环境（等同云端沙箱），无论它是 Windows 还是 Linux——「环境的进程回收机制」这种措辞本身高度提示这是沙箱/托管环境，不是顾问桌面。`env_check.mjs` 在 Windows 服务会话（`SESSIONNAME=Services` 或 SYSTEM 账户）会直接判 `CLOUD_SANDBOX`。
 
 ### 第一选择：平台浏览器工具
 
@@ -180,7 +195,7 @@ python3 -B scripts/consultant_search.py search-browser --request request.json
 
 默认只选择招聘岗位，不主动重填关键词。脚本会写入keywords且依赖明确关键词时，不把它当成本轮默认入口；先用浏览器下拉选择岗位，保留平台实际带出的搜索词并检查结果。不能为通过脚本校验而输入岗位名或复制提示词。由助手把顾问自然语言填写进请求文件，不让顾问编写JSON。`jobs`读取当次岗位选项；`job_key`从当次结果取得。多个企业端页面时通过`--target`指定正确标签页。
 
-启动入口会优先沿用已有调试窗口；没有连接时启动Chrome或Edge，并优先使用本机已存在的旧技能浏览器目录以保留登录。已有招聘窗口但未连接时先说明情况，不悄悄切换。需要另行启动调试浏览器时，使用可见窗口、本机地址127.0.0.1、端口9222和独立用户目录`~/.51job-talent-inviter/browser-profile`，打开`https://ehire.51job.com/Revision/talent/search`。遵守执行环境的启动权限要求，让用户在该窗口完成必要登录。不关闭用户原有浏览器、不复制Cookie、不降低浏览器安全设置。
+启动入口会优先沿用已有调试窗口；没有连接时启动Chrome或Edge，并优先使用本机已存在的旧技能浏览器目录以保留登录。已有招聘窗口但未连接时先说明情况，不悄悄切换。需要另行启动调试浏览器时，使用可见窗口、本机地址127.0.0.1、端口9222和独立用户目录`~/.51job-talent-inviter/browser-profile`，打开`https://ehire.51job.com/Revision/talent/search`。遵守执行环境的启动权限要求，让用户在该窗口完成必要登录。不关闭用户原有浏览器、不复制Cookie、不降低浏览器安全设置。**Windows 上执行时另见[Windows 本机路线的三个坑](#windows-本机路线的三个坑2026-09-30-实例)**：启动必须走平台后台常驻任务（detached 挡不住进程回收）；profile 锁冲突先 taskkill 清僵尸再复用原目录，禁止换新目录；用真 Chrome/Edge 并请顾问确认窗口可见。
 
 自带脚本只适配关联岗位、关键词、期望工作地、工作年限快捷选项及学历快捷选项。当前居住地与期望工作地不能互换。默认居住范围按[16个省级地区](default-residence.md)执行，需要浏览器工具实际填写与核对；不能仅靠搜索脚本完成本技能。高级条件用实际浏览器控件补充并读回，不能传给尚未支持它的脚本后假装成功。多关键词的OR语法须当场核实；不自行拼接职位后缀。
 
