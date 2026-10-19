@@ -225,9 +225,11 @@ async function analyze(minDays = 1) {
     const opened = await openConversation(it.i);
     await sleep(500);
     const msgs = await readMessages();
+    // sms 偏好卡是动态渲染的（有时不在消息流里），全页面兜底检测
+    const hasSms = msgs.some(m => m.kind === "sms-preference") ||
+      !!(await c.evalJS(`!!document.querySelector('.phone-sms-card')`));
     const nonTime = msgs.filter(m => m.kind !== "time");
     const last = nonTime[nonTime.length - 1];
-    const hasSms = msgs.some(m => m.kind === "sms-preference");
     const lastMine = last && last.dir === "mine";
     const lastReply = msgs.filter(m => m.dir === "theirs" && m.kind === "text").slice(-1)[0];
     if (!nonTime.length) { item.status = "需人工确认"; item.reason = "消息区读取为空，可能未加载完"; result.push(item); continue; }
