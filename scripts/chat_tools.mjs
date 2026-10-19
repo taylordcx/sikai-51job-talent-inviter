@@ -5,10 +5,10 @@
 // 前置：真 Chrome 已开 9222 + 已登录 + 有 人才沟通 标签页（ehire.51job.com/Revision/chat）
 //
 // 子命令：
-//   chats                          读左侧会话列表（姓名/岗位/最后消息时间/预览/方向判定/距今天数）
+//   chats                          读左侧会话列表（姓名/岗位/最后消息时间/预览/方向判定/已投徽章/距今天数）
 //   open <姓名|序号>                切换到某个会话
 //   msgs                           读当前会话消息（方向 mine/theirs/system、时间、文本）
-//   analyze                        扫描全部会话 → 按 reply-workflow.md 四条规则输出待追发名单（只读不发）
+//   analyze                        扫描全部会话 → 按 reply-workflow.md 规则输出待追发名单（只读不发）
 //   fill <文本>                     往聊天输入框注入文本（不发送）
 //   send <文本>                     注入 + 点发送 + 读回验证；--yes 跳过确认（仍受上限保护）
 //
@@ -18,7 +18,8 @@
 //   消息类型   .text-element=文字；.invite-delivery-element=系统邀约；.phone-sms-card=该人才偏好电话/短信
 //   输入框     [contenteditable=true].input-textarea_self
 //   发送按钮   button.new-send-button
-//   预览前缀   "[已读]"/"[未读]"=我方最后一条文字；"已邀请对方投递"=我方系统邀约；
+//   已投徽章   会话项预览行尾「已投」= 对方已投递简历（转顾问看简历，不追发）
+//   预览前缀   "[已读]"/"[未读]"/"[送达]"=我方最后一条文字；"已邀请对方投递"=我方系统邀约；
 //              "[已同意]"/"对方..."=对方有动作（转顾问，不追发）
 
 import { readFileSync } from "node:fs";
@@ -94,6 +95,7 @@ function judgePreview(preview) {
   const p = (preview || "").trim();
   if (/^\[已读\]/.test(p))  return { dir: "mine", read: true,  kind: "text" };
   if (/^\[未读\]/.test(p))  return { dir: "mine", read: false, kind: "text" };
+  if (/^\[送达\]/.test(p))  return { dir: "mine", read: null,  kind: "text" };
   if (/^已邀请对方投递/.test(p)) return { dir: "mine", read: null, kind: "invite" };
   if (/^\[已同意\]|^对方/.test(p)) return { dir: "theirs", read: null, kind: "action" };
   return { dir: "unknown", read: null, kind: "text" };
@@ -103,15 +105,17 @@ function judgePreview(preview) {
 async function readConversationList() {
   const parseItem = `(() => {
     const TIME_RE = /^(刚刚|\\d+秒前|\\d+分钟前|\\d+小时前|昨天|前天|\\d{1,2}:\\d{2}|\\d{1,2}\\/\\d{1,2}|\\d{4}[-\\/]\\d{1,2}[-\\/]\\d{1,2})$/;
-    const strip = s => (s || '').replace(/已投$/, '').trim();
     return JSON.stringify([...document.querySelectorAll('.conversation-item')].map((e, i) => {
       const box = e.querySelector('.item-content');
       const lines = box ? (box.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean) : [];
       const m = (lines[0] || '').match(/^(\\S+)\\s*(.*)$/);
       const timeLine = lines.slice(1).find(l => TIME_RE.test(l));
-      const preview = strip(lines.filter(l => l !== timeLine).slice(1).join(' '));
+      let preview = lines.filter(l => l !== timeLine).slice(1).join(' ');
+      // 「已投」徽章：对方已投递简历，识别后从预览剥离
+      const applied = /已投$/.test(preview) || /已投$/.test(lines[0] || '');
+      preview = preview.replace(/已投$/, '').trim();
       return { i, name: m ? m[1] : (lines[0] || ''), job: m ? m[2].trim() : '',
-               time: timeLine || '', preview };
+               time: timeLine || '', preview, applied };
     }));
   })()`;
   const raw = JSON.parse(await c.evalJS(parseItem));
@@ -219,6 +223,8 @@ async function analyze(minDays = 1) {
   const result = [];
   for (const it of list) {
     const item = { name: it.name, job: it.job, lastTime: it.time, daysAgo: it.daysAgo, preview: (it.preview || "").slice(0, 60) };
+    // 已投徽章：对方已投递简历 → 球在顾问这边，不再追发
+    if (it.applied) { item.status = "待顾问处理"; item.reason = "对方已投递简历（已投徽章），请查看简历"; item.applied = true; result.push(item); continue; }
     // 列表层初判：明确是对方动作 → 直接转顾问；其余（含 unknown/时间解析失败）一律点开会话用消息区核实
     if (it.lastDir === "theirs") { item.status = "待顾问处理"; item.reason = "对方有动作/回复，不自动追"; result.push(item); continue; }
     // 打开会话细看消息区（消息区比列表预览可靠）
